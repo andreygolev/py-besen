@@ -8,10 +8,13 @@ Up to version 0.4.8, the library was developed in [moryoav/besen](https://github
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-10-16
+
 ### Fixed
 
 - Expose `ChargeStatus.scheduled_start` and `charging_time_limit` only while a charging reservation is pending or a session is running. Clear them after cancellation, completion, a fault, an unknown state, or disconnection, while preserving the other session information.
 - Combine current-state and session reports in either order, and ignore schedule details from sessions that ended during the current connection. Require fresh reports after reconnecting.
+- Preserve session identity through a fault or unknown state, so a later completion still retires old schedule reports.
 
 ## [0.4.10] - 2026-10-01
 

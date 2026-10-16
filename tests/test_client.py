@@ -203,6 +203,48 @@ async def test_schedule_survives_transition_to_charging_and_fault_recovery(
     assert recovered.charge.charging_time_limit == 90
 
 
+@pytest.mark.parametrize("transient_state", [0, 1])
+@pytest.mark.parametrize("session_first", [False, True])
+async def test_ended_schedule_after_transient_state_rejects_late_report(
+    charging_client: tuple[BesenClient, _FakeBleakClient],
+    transient_state: int,
+    session_first: bool,
+) -> None:
+    """A fault or unknown state must not lose the identity of a session that ends."""
+
+    client, _fake = charging_client
+    await client._async_handle_packet(4, _schedule_status(14), EVSE_IDENTIFIER)
+    await client._async_handle_packet(5, _schedule_report(14), EVSE_IDENTIFIER)
+    packets = [
+        (4, _schedule_status(transient_state)),
+        (5, _schedule_report(transient_state)),
+    ]
+    if session_first:
+        packets.reverse()
+    for command, data in packets:
+        await client._async_handle_packet(command, data, EVSE_IDENTIFIER)
+    await client._async_handle_packet(13, _schedule_status(15), EVSE_IDENTIFIER)
+    await client._async_handle_packet(6, _schedule_report(14), EVSE_IDENTIFIER)
+    await client._async_handle_packet(4, _schedule_status(20), EVSE_IDENTIFIER)
+    assert client.state.charge.scheduled_start is None
+    assert client.state.charge.charging_time_limit is None
+
+    next_start = SCHEDULED_START + timedelta(hours=1)
+    await client._async_handle_packet(
+        5,
+        _schedule_report(
+            20,
+            session_start=SESSION_START + timedelta(seconds=1),
+            scheduled_start=next_start,
+            time_limit=120,
+        ),
+        EVSE_IDENTIFIER,
+    )
+    replacement = client.state
+    assert replacement.charge.scheduled_start == next_start
+    assert replacement.charge.charging_time_limit == 120
+
+
 @pytest.mark.parametrize("time_limit", [0, 0xFFFF, 1, 0xFFFE])
 async def test_active_schedule_preserves_unset_and_unlimited_values(
     charging_client: tuple[BesenClient, _FakeBleakClient], time_limit: int

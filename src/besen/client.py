@@ -1074,8 +1074,8 @@ class BesenClient:
                     and self._schedule_session is not None
                 ):
                     self._ended_schedule_sessions.add(self._schedule_session)
+                    self._schedule_session = None
                 self._schedule_values = (None, None)
-                self._schedule_session = None
             self._schedule_state = current_state
         elif len(data) >= 74:
             # Session reports include their own current state and charge ID.
@@ -1091,9 +1091,9 @@ class BesenClient:
                     )
                 else:
                     self._schedule_values = (None, None)
-                    self._schedule_session = None
                     if data[1] in (12, 13, 15, 17):
                         self._ended_schedule_sessions.add(session)
+                        self._schedule_session = None
 
         scheduled_start, charging_time_limit = (
             self._schedule_values
