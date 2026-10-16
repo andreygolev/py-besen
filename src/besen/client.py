@@ -65,6 +65,8 @@ USER_ID = [101, 118, 115, 101, 77, 81, 84, 84, 0, 0, 0, 0, 0, 0, 0, 0]
 
 # The charger rejects an immediate start in these states until it gets a stop.
 FINISHED_STATES = ("Completed", "Completed Full Charge")
+SCHEDULE_STATES = ("Charging Reservation", "Charging")
+ENDED_SCHEDULE_STATES = (*FINISHED_STATES, "Ready to charge", "Not Connected")
 
 
 def _validate_start(start: datetime | None) -> None:
@@ -129,6 +131,10 @@ class BesenClient:
         self._last_clock_sync: float | None = None
         self._unavailable_logged = False
         self._auth_rejection_logged = False
+        self._schedule_state: str | None = None
+        self._schedule_values: tuple[datetime | None, int | None] = (None, None)
+        self._schedule_session: tuple[bytes, datetime | None] | None = None
+        self._ended_schedule_sessions: set[tuple[bytes, datetime | None]] = set()
         self._state = BesenData(
             info=ChargerInfo(address=address, advertised_name=advertised_name)
         )
@@ -563,6 +569,16 @@ class BesenClient:
         client = self._client
         self._end_charge_start()
         self._connection_generation += 1
+        self._reset_schedule()
+        if (
+            self._state.charge.scheduled_start is not None
+            or self._state.charge.charging_time_limit is not None
+        ):
+            self._set_state(
+                charge=self._state.charge.updated(
+                    scheduled_start=None, charging_time_limit=None
+                )
+            )
         if client is None:
             self._characteristics = None
             return
@@ -827,7 +843,7 @@ class BesenClient:
             return
 
         if command in (4, 5, 6, 13):
-            self._set_state(charge=self._state.charge.updated(**values))
+            self._update_charge_status(command, data, values)
             return
 
         if command == 262:
@@ -1034,10 +1050,71 @@ class BesenClient:
             values["software_version"] = values["hardware_version"]
         self._set_state(info=self._state.info.updated(**values))
 
+    def _reset_schedule(self) -> None:
+        """Require fresh status and session reports for a new BLE connection."""
+
+        self._schedule_state = None
+        self._schedule_values = (None, None)
+        self._schedule_session = None
+        self._ended_schedule_sessions.clear()
+
+    def _update_charge_status(
+        self, command: int, data: bytes, values: dict[str, Any]
+    ) -> None:
+        """Combine current and session reports without exposing an old schedule."""
+
+        if command in (4, 13):
+            current_state = values.get("current_state", self._schedule_state)
+            if (
+                current_state not in SCHEDULE_STATES
+                and current_state != self._schedule_state
+            ):
+                if (
+                    current_state in ENDED_SCHEDULE_STATES
+                    and self._schedule_session is not None
+                ):
+                    self._ended_schedule_sessions.add(self._schedule_session)
+                self._schedule_values = (None, None)
+                self._schedule_session = None
+            self._schedule_state = current_state
+        elif len(data) >= 74:
+            # Session reports include their own current state and charge ID.
+            # The setup timestamp also distinguishes starts within one minute,
+            # for which the generated charge ID can be identical.
+            session = (data[2:18], values["session_start"])
+            if session not in self._ended_schedule_sessions:
+                if data[1] in (14, 20):
+                    self._schedule_session = session
+                    self._schedule_values = (
+                        values["scheduled_start"],
+                        values["charging_time_limit"],
+                    )
+                else:
+                    self._schedule_values = (None, None)
+                    self._schedule_session = None
+                    if data[1] in (12, 13, 15, 17):
+                        self._ended_schedule_sessions.add(session)
+
+        scheduled_start, charging_time_limit = (
+            self._schedule_values
+            if self._schedule_state in SCHEDULE_STATES
+            else (None, None)
+        )
+        self._set_state(
+            charge=self._state.charge.updated(**values).updated(
+                scheduled_start=scheduled_start, charging_time_limit=charging_time_limit
+            )
+        )
+
     def _set_state(self, **changes: Any) -> None:
         """Update state and notify listeners."""
 
         was_available = self._state.available and self._state.authenticated
+        if changes.get("available") is False or changes.get("authenticated") is False:
+            self._reset_schedule()
+            changes["charge"] = changes.get("charge", self._state.charge).updated(
+                scheduled_start=None, charging_time_limit=None
+            )
         changes["auth_failed"] = self._auth_failed
         self._state = self._state.updated(**changes)
         available = self._state.available and self._state.authenticated

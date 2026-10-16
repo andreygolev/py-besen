@@ -27,10 +27,239 @@ from besen.const import (
     WRITE_UUID,
 )
 from besen.exceptions import CannotConnect, CommandFailed, InvalidAuth, ProtocolError
-from besen.models import BoardRevision, CharacteristicPair
+from besen.models import BesenData, BoardRevision, CharacteristicPair
 from besen.protocol import PARSERS, build_command, parse_packet
 
 EVSE_IDENTIFIER = "8949281891483449"
+SCHEDULED_START = datetime(2026, 10, 16, 17, tzinfo=UTC)
+SESSION_START = datetime(2026, 10, 16, 16, tzinfo=UTC)
+
+
+def _schedule_status(current_state: int) -> bytes:
+    """Build a live status report without session details."""
+
+    data = bytearray(25)
+    data[0] = 1
+    data[18] = 4
+    data[20] = current_state
+    return bytes(data)
+
+
+def _schedule_report(
+    current_state: int,
+    *,
+    session_start: datetime = SESSION_START,
+    scheduled_start: datetime | None = SCHEDULED_START,
+    time_limit: int = 90,
+) -> bytes:
+    """Build a session report, including retained schedule fields."""
+
+    data = bytearray(74)
+    data[0] = 1
+    data[1] = current_state
+    data[2:18] = b"2026101616001337"
+    data[20:22] = time_limit.to_bytes(2, "big")
+    if scheduled_start is not None:
+        data[26:30] = int(scheduled_start.timestamp()).to_bytes(4, "big")
+    data[46] = 16
+    data[47:51] = int(session_start.timestamp()).to_bytes(4, "big")
+    data[51:55] = (600).to_bytes(4, "big")
+    data[63:67] = (456).to_bytes(4, "big")
+    return bytes(data)
+
+
+@pytest.mark.parametrize("status_command", [4, 13])
+@pytest.mark.parametrize("session_command", [5, 6])
+@pytest.mark.parametrize("session_first", [False, True])
+@pytest.mark.parametrize("current_state", [14, 20])
+async def test_active_schedule_report_order(
+    charging_client: tuple[BesenClient, _FakeBleakClient],
+    status_command: int,
+    session_command: int,
+    session_first: bool,
+    current_state: int,
+) -> None:
+    """Either report order exposes a schedule after activity is confirmed."""
+
+    client, _fake = charging_client
+    updates: list[BesenData] = []
+    remove_listener = client.add_listener(updates.append)
+    packets = [
+        (status_command, _schedule_status(current_state)),
+        (session_command, _schedule_report(current_state)),
+    ]
+    if session_first:
+        packets.reverse()
+    for index, (command, data) in enumerate(packets):
+        await client._async_handle_packet(command, data, EVSE_IDENTIFIER)
+        if index == 0:
+            assert client.state.charge.scheduled_start is None
+            assert client.state.charge.charging_time_limit is None
+    remove_listener()
+    assert updates[0].charge.scheduled_start is None
+    assert updates[-1].charge.scheduled_start == SCHEDULED_START
+    assert updates[-1].charge.charging_time_limit == 90
+    assert client.state.charge.session_start == SESSION_START
+    assert client.state.charge.session_duration == 600
+    assert client.state.charge.session_current_limit == 16
+    assert client.state.charge.session_energy == 4.56
+    if current_state == 20:
+        assert client.state.charge.charging_status == "Cancel"
+
+
+@pytest.mark.parametrize("session_first", [False, True])
+@pytest.mark.parametrize("current_state", [0, 1, 2, 3, 12, 13, 15, 17, 255])
+async def test_schedule_ends_without_clearing_session_history(
+    charging_client: tuple[BesenClient, _FakeBleakClient],
+    session_first: bool,
+    current_state: int,
+) -> None:
+    """Inactive reports clear only the active fields, in either order."""
+
+    client, _fake = charging_client
+    await client._async_handle_packet(4, _schedule_status(20), EVSE_IDENTIFIER)
+    await client._async_handle_packet(5, _schedule_report(20), EVSE_IDENTIFIER)
+    previous = client.state
+    packets = [
+        (13, _schedule_status(current_state)),
+        (6, _schedule_report(current_state)),
+    ]
+    if session_first:
+        packets.reverse()
+    for command, data in packets:
+        await client._async_handle_packet(command, data, EVSE_IDENTIFIER)
+        assert client.state.charge.scheduled_start is None
+        assert client.state.charge.charging_time_limit is None
+    assert client.state.charge.session_start == SESSION_START
+    assert client.state.charge.session_duration == 600
+    assert client.state.charge.session_current_limit == 16
+    assert client.state.charge.session_energy == 4.56
+    assert previous.charge.scheduled_start == SCHEDULED_START
+    assert previous.charge.charging_time_limit == 90
+
+
+@pytest.mark.parametrize("session_first", [False, True])
+async def test_new_schedule_does_not_restore_ended_values(
+    charging_client: tuple[BesenClient, _FakeBleakClient], session_first: bool
+) -> None:
+    """Retired reports cannot replace a new schedule, even with the same ID."""
+
+    client, _fake = charging_client
+    await client._async_handle_packet(4, _schedule_status(20), EVSE_IDENTIFIER)
+    await client._async_handle_packet(5, _schedule_report(20), EVSE_IDENTIFIER)
+    await client._async_handle_packet(4, _schedule_status(12), EVSE_IDENTIFIER)
+    await client._async_handle_packet(13, _schedule_status(13), EVSE_IDENTIFIER)
+    # A delayed active report and the retained completed report belong to A.
+    for state in (20, 13):
+        await client._async_handle_packet(6, _schedule_report(state), EVSE_IDENTIFIER)
+        assert client.state.charge.scheduled_start is None
+
+    new_start = SCHEDULED_START + timedelta(hours=1)
+    new_report = _schedule_report(
+        20,
+        session_start=SESSION_START + timedelta(seconds=1),
+        scheduled_start=new_start,
+        time_limit=120,
+    )
+    packets = [(4, _schedule_status(20)), (5, new_report)]
+    if session_first:
+        packets.reverse()
+    await client._async_handle_packet(*packets[0], EVSE_IDENTIFIER)
+    assert client.state.charge.scheduled_start is None
+    # Neither an active nor completed late report for A can erase B's details.
+    for state in (20, 13):
+        await client._async_handle_packet(6, _schedule_report(state), EVSE_IDENTIFIER)
+    await client._async_handle_packet(*packets[1], EVSE_IDENTIFIER)
+    assert client.state.charge.scheduled_start == new_start
+    assert client.state.charge.charging_time_limit == 120
+    for state in (20, 13):
+        await client._async_handle_packet(6, _schedule_report(state), EVSE_IDENTIFIER)
+        assert client.state.charge.scheduled_start == new_start
+        assert client.state.charge.charging_time_limit == 120
+
+
+@pytest.mark.parametrize("session_first", [False, True])
+async def test_schedule_survives_transition_to_charging_and_fault_recovery(
+    charging_client: tuple[BesenClient, _FakeBleakClient], session_first: bool
+) -> None:
+    """A reservation becomes a running session, which can recover from a fault."""
+
+    client, _fake = charging_client
+    await client._async_handle_packet(4, _schedule_status(20), EVSE_IDENTIFIER)
+    await client._async_handle_packet(5, _schedule_report(20), EVSE_IDENTIFIER)
+    await client._async_handle_packet(4, _schedule_status(14), EVSE_IDENTIFIER)
+    assert client.state.charge.scheduled_start == SCHEDULED_START
+    await client._async_handle_packet(4, _schedule_status(1), EVSE_IDENTIFIER)
+    faulted = client.state
+    assert faulted.charge.scheduled_start is None
+    await client._async_handle_packet(5, _schedule_report(1), EVSE_IDENTIFIER)
+    packets = [(13, _schedule_status(14)), (6, _schedule_report(14))]
+    if session_first:
+        packets.reverse()
+    for command, data in packets:
+        await client._async_handle_packet(command, data, EVSE_IDENTIFIER)
+    recovered = client.state
+    assert recovered.charge.scheduled_start == SCHEDULED_START
+    assert recovered.charge.charging_time_limit == 90
+
+
+@pytest.mark.parametrize("time_limit", [0, 0xFFFF, 1, 0xFFFE])
+async def test_active_schedule_preserves_unset_and_unlimited_values(
+    charging_client: tuple[BesenClient, _FakeBleakClient], time_limit: int
+) -> None:
+    """An immediate session has no scheduled start; limits retain their sentinels."""
+
+    client, _fake = charging_client
+    await client._async_handle_packet(4, _schedule_status(14), EVSE_IDENTIFIER)
+    await client._async_handle_packet(
+        5,
+        _schedule_report(14, scheduled_start=None, time_limit=time_limit),
+        EVSE_IDENTIFIER,
+    )
+    assert client.state.charge.scheduled_start is None
+    assert client.state.charge.charging_time_limit == (
+        None if time_limit in (0, 0xFFFF) else time_limit
+    )
+    await client._async_handle_packet(6, bytes(74), EVSE_IDENTIFIER)
+    assert client.state.charge.scheduled_start is None
+    assert client.state.charge.charging_time_limit is None
+
+
+@pytest.mark.parametrize("session_first", [False, True])
+async def test_schedule_reconnect_requires_fresh_reports(
+    charging_client: tuple[BesenClient, _FakeBleakClient], session_first: bool
+) -> None:
+    """A reconnect must not reuse schedule details or queued old notifications."""
+
+    client, fake = charging_client
+    await client._async_handle_packet(4, _schedule_status(20), EVSE_IDENTIFIER)
+    await client._async_handle_packet(5, _schedule_report(20), EVSE_IDENTIFIER)
+    generation = client._connection_generation
+    fake.is_connected = False
+    client._disconnected(cast(Any, fake))
+    assert client.state.charge.scheduled_start is None
+    assert client.state.charge.charging_time_limit is None
+    assert client.state.charge.session_energy == 4.56
+    fake.is_connected = True
+    await client.async_start()
+    for command, data in [(4, _schedule_status(20)), (5, _schedule_report(20))]:
+        await client._async_handle_packet(
+            command, data, EVSE_IDENTIFIER, generation=generation
+        )
+    assert client.state.charge.scheduled_start is None
+    packets = [(13, _schedule_status(20)), (6, _schedule_report(20))]
+    if session_first:
+        packets.reverse()
+    for index, (command, data) in enumerate(packets):
+        await client._async_handle_packet(command, data, EVSE_IDENTIFIER)
+        if index == 0:
+            assert client.state.charge.scheduled_start is None
+    reconnected = client.state
+    assert reconnected.charge.scheduled_start == SCHEDULED_START
+    assert reconnected.charge.charging_time_limit == 90
+    await client._disconnect_client()
+    assert client.state.charge.scheduled_start is None
+    assert client.state.charge.charging_time_limit is None
 
 
 @pytest.fixture
