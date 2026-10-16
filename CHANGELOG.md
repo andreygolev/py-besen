@@ -6,6 +6,16 @@ This project follows semantic versioning where practical. Release tags use a `v`
 
 Up to version 0.4.8, the library was developed in [moryoav/besen](https://github.com/moryoav/besen) together with the Home Assistant custom integration, and versions 0.2.0 to 0.2.2 were published as `besen-bs20`. Some earlier entries also describe integration changes. The integration's changelog continues in that repository.
 
+## [Unreleased]
+
+## [0.4.11] - 2026-10-16
+
+### Fixed
+
+- Expose `ChargeStatus.scheduled_start` and `charging_time_limit` only while a charging reservation is pending or a session is running. Clear them after cancellation, completion, a fault, an unknown state, or disconnection, while preserving the other session information.
+- Combine current-state and session reports in either order, and ignore schedule details from sessions that ended during the current connection. Require fresh reports after reconnecting.
+- Preserve session identity through a fault or unknown state, so a later completion still retires old schedule reports.
+
 ## [0.4.10] - 2026-10-01
 
 ### Fixed

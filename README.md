@@ -158,6 +158,12 @@ await client.async_start_charging(
 An invalid start time or duration raises `ValueError` before anything is sent.
 The charger reports an accepted schedule back as
 `BesenData.charge.scheduled_start` and `BesenData.charge.charging_time_limit`.
+These fields are populated only while a reservation is pending or a session is
+running. They become `None` when the schedule is cancelled, the session ends,
+or the charger reports an unknown or faulted state. After connecting, both a
+current-state report and an active session report are needed before these fields
+are populated, in either order. A disconnect clears them until fresh reports
+arrive.
 
 The charger measures the start time against its own clock. The client sets that
 clock on every login and at most once an hour afterwards, so keep
@@ -209,14 +215,18 @@ Important telemetry fields:
 - `BesenData.charge.total_energy`: lifetime energy counter in kWh.
 - `BesenData.charge.session_energy`: energy delivered during the current or most
   recently completed charging session in kWh.
-- `BesenData.charge.session_start` and `scheduled_start`: timezone-aware UTC
-  datetimes from the latest session report, or `None` when unset. The scheduled
-  start is the requested start time, which the firmware calls a reservation.
+- `BesenData.charge.session_start`: timezone-aware UTC datetime from the latest
+  session report, or `None` when unset. This remains available after a session
+  ends.
+- `BesenData.charge.scheduled_start`: the requested start time as a timezone-aware
+  UTC datetime, or `None` when unset or no reservation/session is active. The
+  firmware calls this a reservation.
 - `BesenData.charge.session_duration`: elapsed session time in seconds.
 - `BesenData.charge.session_current_limit`: current limit recorded for the session
   in amperes, or `None` when unset.
 - `BesenData.charge.charging_time_limit`: time after which the charger ends the
-  session in minutes, or `None` when unset or unlimited.
+  session in minutes, or `None` when unset, unlimited, or no reservation/session
+  is active.
 - `BesenData.charge.inner_temp_c` and `BesenData.charge.outer_temp`: temperatures
   in Celsius, or `None` when the charger reports an invalid value.
 - `BesenData.charge.l1_voltage`, `l2_voltage`, and `l3_voltage`: phase voltages in
