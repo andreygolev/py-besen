@@ -106,6 +106,11 @@ The release workflow validates the version, publishes to PyPI with trusted
 publishing, and then creates the GitHub release. Bump the Home Assistant
 integrations only after the new version is available on PyPI.
 
+For a release candidate, use a version such as `0.5.0rc1` and a matching
+`v0.5.0rc1` tag. The workflow publishes it as a PyPI prerelease and a GitHub
+prerelease, keeping the latest stable GitHub release unchanged. Test updated
+consumers with an explicit candidate pin before publishing the stable release.
+
 ## Security Notes
 
 Please be especially careful with changes involving:

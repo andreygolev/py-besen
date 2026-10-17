@@ -104,15 +104,34 @@ async def test_active_schedule_report_order(
     assert client.state.charge.session_current_limit == 16
     assert client.state.charge.session_energy == 4.56
     if current_state == 20:
-        assert client.state.charge.charging_status == "Cancel"
+        assert client.state.charge.charging_status == "Scheduled"
+        assert client.state.charge.current_state == "Charging Reservation"
+        assert (
+            client.state.charge.charging_status_description == "Charging reservation."
+        )
+        assert client.state.charge.charger_status is False
 
 
 @pytest.mark.parametrize("session_first", [False, True])
-@pytest.mark.parametrize("current_state", [0, 1, 2, 3, 12, 13, 15, 17, 255])
+@pytest.mark.parametrize(
+    ("current_state", "expected_status"),
+    [
+        (0, None),
+        (1, "Fault"),
+        (2, "Finish Charging"),
+        (3, "Finish Charging"),
+        (12, "Connect"),
+        (13, "Start"),
+        (15, "Finished"),
+        (17, "Finished"),
+        (255, None),
+    ],
+)
 async def test_schedule_ends_without_clearing_session_history(
     charging_client: tuple[BesenClient, _FakeBleakClient],
     session_first: bool,
     current_state: int,
+    expected_status: str | None,
 ) -> None:
     """Inactive reports clear only the active fields, in either order."""
 
@@ -134,6 +153,8 @@ async def test_schedule_ends_without_clearing_session_history(
     assert client.state.charge.session_duration == 600
     assert client.state.charge.session_current_limit == 16
     assert client.state.charge.session_energy == 4.56
+    assert client.state.charge.charging_status == expected_status
+    assert previous.charge.charging_status == "Scheduled"
     assert previous.charge.scheduled_start == SCHEDULED_START
     assert previous.charge.charging_time_limit == 90
 
@@ -187,10 +208,13 @@ async def test_schedule_survives_transition_to_charging_and_fault_recovery(
     client, _fake = charging_client
     await client._async_handle_packet(4, _schedule_status(20), EVSE_IDENTIFIER)
     await client._async_handle_packet(5, _schedule_report(20), EVSE_IDENTIFIER)
+    assert client.state.charge.charging_status == "Scheduled"
     await client._async_handle_packet(4, _schedule_status(14), EVSE_IDENTIFIER)
+    assert client.state.charge.charging_status == "Finish Charging"
     assert client.state.charge.scheduled_start == SCHEDULED_START
     await client._async_handle_packet(4, _schedule_status(1), EVSE_IDENTIFIER)
     faulted = client.state
+    assert faulted.charge.charging_status == "Fault"
     assert faulted.charge.scheduled_start is None
     await client._async_handle_packet(5, _schedule_report(1), EVSE_IDENTIFIER)
     packets = [(13, _schedule_status(14)), (6, _schedule_report(14))]
@@ -199,6 +223,7 @@ async def test_schedule_survives_transition_to_charging_and_fault_recovery(
     for command, data in packets:
         await client._async_handle_packet(command, data, EVSE_IDENTIFIER)
     recovered = client.state
+    assert recovered.charge.charging_status == "Finish Charging"
     assert recovered.charge.scheduled_start == SCHEDULED_START
     assert recovered.charge.charging_time_limit == 90
 

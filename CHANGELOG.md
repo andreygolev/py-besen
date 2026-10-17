@@ -8,6 +8,14 @@ Up to version 0.4.8, the library was developed in [moryoav/besen](https://github
 
 ## [Unreleased]
 
+### Breaking
+
+- Rename `ChargeStatus.charging_status` from `Cancel` to `Scheduled` for a pending charging reservation. Update comparisons and consumer mappings to use `Scheduled`. The wire codes and charging commands are unchanged; no `Cancel` alias is retained.
+
+### Changed
+
+- Mark release candidates as GitHub prereleases without replacing the latest stable release.
+
 ## [0.4.11] - 2026-10-16
 
 ### Fixed
