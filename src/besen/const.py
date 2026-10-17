@@ -123,7 +123,7 @@ CHARGING_STATUS: Final = {
     3: "Waiting",
     4: "Finished",
     5: "Finished",
-    6: "Cancel",
+    6: "Scheduled",
     7: "Connect",
     8: "Fault",
     9: "Start",

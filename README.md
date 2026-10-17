@@ -120,6 +120,17 @@ connectable path is available.
 - `client.state` returns the latest `BesenData` snapshot.
 - `client.is_connected` reports whether the underlying BLE connection is open.
 
+### Charging status change in 0.5.0
+
+`ChargeStatus.charging_status` reports `Scheduled` while a charging reservation
+is pending. This replaces the incorrect `Cancel` label from 0.4.x. Applications
+that compare this field with `Cancel` must use `Scheduled` instead. The numeric
+protocol codes and start/stop commands are unchanged.
+
+The `0.5.0rc1` prerelease is for testing updated consumers. Install it explicitly
+with `pip install besen==0.5.0rc1`. Existing Home Assistant integrations need the
+matching status mapping before they can use this candidate.
+
 ### Control methods
 
 These methods can change the charger or operate real charging hardware. Test them
