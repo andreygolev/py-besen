@@ -8,6 +8,17 @@ Up to version 0.4.8, the library was developed in [moryoav/besen](https://github
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-17
+
+### Breaking
+
+- Rename `ChargeStatus.charging_status` from `Cancel` to `Scheduled` for a pending charging reservation. Update comparisons and consumer mappings to use `Scheduled`. The wire codes and charging commands are unchanged; no `Cancel` alias is retained.
+
+### Updating
+
+- Use HACS integration 0.5.14 or later with this library. Earlier HACS releases expect the old library label. Update through HACS and restart Home Assistant to install the integration and library together.
+- Home Assistant Core manages its own pinned library version. Core adoption is tracked in [PR #186968](https://github.com/home-assistant/core/pull/186968).
+
 ## [0.5.0rc1] - 2026-10-17
 
 ### Breaking
