@@ -1,7 +1,7 @@
 # Contributing to the Besen Python library
 
 Thanks for your interest in improving `besen`, the async Python client for Besen
-EV chargers over Bluetooth Low Energy.
+EV chargers over Bluetooth Low Energy and local UDP.
 
 I maintain the library in this repository. The Home Assistant custom integration
 that uses it lives in [moryoav/besen](https://github.com/moryoav/besen), and the
@@ -59,7 +59,7 @@ python -m pip install -e ".[dev]"
 The repository layout is:
 
 ```text
-src/besen/          Python Bluetooth library
+src/besen/          Python Bluetooth and UDP library
 tests/              Library tests
 .github/workflows/  CI and release workflows
 ```

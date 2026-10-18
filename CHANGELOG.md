@@ -8,6 +8,24 @@ Up to version 0.4.8, the library was developed in [moryoav/besen](https://github
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-18
+
+### Added
+
+- Add `BesenUdpClient` and `BesenUdpHub` for local LAN control using the existing charger state and command methods. Share one listener, route by serial, learn source ports, and reconnect after heartbeat expiry.
+- Add Bluetooth Wi-Fi provisioning with firmware-specific layouts, UTF-8 input limits, negotiated-MTU fragmentation and correlated acknowledgements. Discard echoed network credentials.
+- Add fresh live-status and LAN-heartbeat verification methods, plus passive packet arrival timestamps for consumers managing connection recovery.
+
+### Fixed
+
+- Keep authenticated LAN sessions active when BS20 firmware broadcasts metadata after login, and retry a missing temperature-unit reply on a later heartbeat.
+
+### Compatibility and validation
+
+- Preserve the existing Bluetooth API and command behavior. Wi-Fi acknowledgement alone does not prove a network connection; callers must verify LAN login, fresh status and heartbeats separately.
+- Pass 266 tests on Python 3.12, 3.13 and 3.14, with 95.80% coverage, plus Ruff, mypy and package validation.
+- Verify Wi-Fi setup, authenticated LAN telemetry, a reversible display-unit command and reconnects on a BS20. A private Home Assistant trial also verified controlled Bluetooth/LAN handovers; the user confirmed charging. Automatic transport selection remains the integration's responsibility.
+
 ## [0.5.0] - 2026-10-17
 
 ### Breaking

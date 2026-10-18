@@ -57,11 +57,13 @@ from .protocol import (
     generate_charge_id,
     timestamp_bytes,
 )
+from .wifi import wifi_payload
 
 BLEDeviceProvider = Callable[[], BLEDevice | None]
 StateListener = Callable[[BesenData], None]
 
 USER_ID = [101, 118, 115, 101, 77, 81, 84, 84, 0, 0, 0, 0, 0, 0, 0, 0]
+WIFI_SETUP_TIMEOUT = 10.0
 
 # The charger rejects an immediate start in these states until it gets a stop.
 FINISHED_STATES = ("Completed", "Completed Full Charge")
@@ -108,11 +110,15 @@ class BesenClient:
         self._listeners: set[StateListener] = set()
         self._connect_lock = asyncio.Lock()
         self._command_lock = asyncio.Lock()
+        self._wifi_lock = asyncio.Lock()
+        self._wifi_response: asyncio.Future[int] | None = None
+        self.wifi_acknowledgement: int | None = None
         self._charge_start_lock = asyncio.Lock()
         self._charge_start_response: asyncio.Future[dict[str, Any] | None] | None = None
         self._charge_start_line_id: int | None = None
         self._packet_lock = asyncio.Lock()
         self._ready_event = asyncio.Event()
+        self._status_received = asyncio.Event()
         self._connect_owner_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._watchdog_task: asyncio.Task[None] | None = None
@@ -179,6 +185,13 @@ class BesenClient:
             self._set_state(available=False, authenticated=False)
             raise
         self._start_watchdog()
+
+    async def async_wait_for_status(self, timeout: float = 10.0) -> None:
+        """Require a fresh live report from this connection, not cached status."""
+        async with asyncio.timeout(timeout):
+            await self._status_received.wait()
+        if not self._state.authenticated or not self._state.available:
+            raise CannotConnect("Charger status connection is no longer active")
 
     async def async_stop(self) -> None:
         """Stop tasks and disconnect from the charger."""
@@ -409,6 +422,30 @@ class BesenClient:
         await self._async_sync_clock_if_due(force=True)
         await self._send_command(33025, [2, 0], name="get_time")
 
+    async def async_configure_wifi(self, ssid: str, password: str) -> int:
+        """Send network credentials once; the caller must verify a LAN login.
+
+        Credentials and raw provisioning replies are never stored in state.
+        A successful write alone does not confirm that the network was joined.
+        """
+        payload = wifi_payload(self._state.info.feature, ssid, password)
+        if not self._state.authenticated:
+            raise CommandFailed("Charger is not authenticated")
+        async with self._wifi_lock:
+            response: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+            self._wifi_response = response
+            self.wifi_acknowledgement = None
+            try:
+                await self._send_command(0x810A, [payload], name="configure_wifi")
+                async with asyncio.timeout(WIFI_SETUP_TIMEOUT):
+                    return await response
+            except TimeoutError as err:
+                raise CannotConnect("Charger did not acknowledge Wi-Fi setup") from err
+            finally:
+                self._wifi_response = None
+                if not response.done():
+                    response.cancel()
+
     async def _connect_and_login(self) -> None:
         """Connect to the BLE device and wait for authentication."""
 
@@ -419,6 +456,7 @@ class BesenClient:
             try:
                 if self._stopping:
                     raise CannotConnect("Besen client is stopping")
+                self._status_received.clear()
                 await self._connect_and_login_locked()
                 if not self.is_connected or not self._state.authenticated:
                     raise CannotConnect("Charger login ended without an active session")
@@ -768,6 +806,19 @@ class BesenClient:
         """Handle one packet in connection order."""
 
         self._logger.debug("Received Besen command %s", command)
+        if command == 0x010A:
+            # Firmware can echo the network password. Retain only the first
+            # byte, without treating its undocumented meaning as join success.
+            wifi_response = self._wifi_response
+            if (
+                wifi_response is not None
+                and not wifi_response.done()
+                and data
+                and identifier == self._state.info.serial
+            ):
+                self.wifi_acknowledgement = data[0]
+                wifi_response.set_result(data[0])
+            return
         if command == 341:
             if not self._login_request_sent or self._state.authenticated:
                 self._logger.debug("Ignoring unsolicited Besen login rejection")
@@ -844,6 +895,8 @@ class BesenClient:
 
         if command in (4, 5, 6, 13):
             self._update_charge_status(command, data, values)
+            if command != 6:
+                self._status_received.set()
             return
 
         if command == 262:
@@ -927,14 +980,13 @@ class BesenClient:
 
         async with self._command_lock:
             client = self._client
-            characteristics = self._characteristics
             generation = self._connection_generation
-            if client is None or characteristics is None or not client.is_connected:
+            if not self.is_connected:
                 raise CommandFailed("Charger is not connected")
             serial = self._state.info.serial
             if serial is None:
                 raise CommandFailed("Charger serial is not known yet")
-            packet = build_command(serial, self.pin, command, payload)
+            packet = self._build_packet(serial, command, payload)
             if start_response is not None:
                 if self._stopping or not self._state.authenticated:
                     raise CommandFailed("Charger is not authenticated")
@@ -942,11 +994,7 @@ class BesenClient:
                 # Reply connector IDs are independent of the request phase selector.
                 self._charge_start_line_id = self._state.charge.line_id
             try:
-                await client.write_gatt_char(
-                    characteristics.write_uuid,
-                    packet,
-                    response=characteristics.write_with_response,
-                )
+                await self._write_packet(packet)
             except Exception as err:
                 if client is self._client and generation == self._connection_generation:
                     self._set_state(
@@ -958,6 +1006,44 @@ class BesenClient:
                     self._ready_event.set()
                     self._schedule_reconnect()
                 raise CommandFailed(f"Failed to send {name}") from err
+
+    def _build_packet(
+        self, serial: str, command: int, payload: list[Any] | None
+    ) -> bytes:
+        """Encode the established Bluetooth command format."""
+        if command == 0x810A:
+            # Provisioning uses the identifier copied from the login frame,
+            # which is wire-order hex rather than a decimal serial number.
+            return build_command(
+                int.from_bytes(bytes.fromhex(serial), "little"),
+                self.pin,
+                command,
+                payload,
+            )
+        return build_command(serial, self.pin, command, payload)
+
+    async def _write_packet(self, packet: bytes) -> None:
+        """Write a packet, fragmenting the larger provisioning frame safely."""
+        client, characteristics = self._client, self._characteristics
+        if client is None or characteristics is None:
+            raise CommandFailed("Charger is not connected")
+        # Provisioning follows the app's negotiated MTU and acknowledged writes.
+        # Other commands keep their established packet and response mode.
+        provisioning = int.from_bytes(packet[19:21], "big") == 0x810A
+        response = characteristics.write_with_response
+        size = len(packet)
+        if provisioning:
+            char = client.services.get_characteristic(characteristics.write_uuid)
+            # The app uses acknowledged writes for this multi-part setup.
+            if char is not None and "write" in char.properties:
+                response = True
+            size = max(20, client.mtu_size - 3)
+        for offset in range(0, len(packet), size):
+            await client.write_gatt_char(
+                characteristics.write_uuid,
+                packet[offset : offset + size],
+                response=response,
+            )
 
     def _charge_start_payload(
         self,
