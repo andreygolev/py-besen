@@ -270,6 +270,9 @@ acknowledgement = await client.async_configure_wifi(
 )
 ```
 
+Calling this method on `BesenUdpClient` raises `CommandFailed` before any packet
+is sent. Network credentials are provisioned through Bluetooth only.
+
 Use a 2.4 GHz network. The firmware feature word selects the appropriate layout:
 legacy firmware accepts up to 15 SSID and 16 password UTF-8 bytes; extended
 firmware accepts up to 32 SSID and 64 password bytes. Empty values, embedded NULs,

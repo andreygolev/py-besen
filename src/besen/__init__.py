@@ -22,7 +22,7 @@ from .models import (
 )
 from .udp import BesenUdpClient, BesenUdpHub
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 __all__ = [
     "BesenClient",
