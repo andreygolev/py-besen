@@ -8,6 +8,12 @@ Up to version 0.4.8, the library was developed in [moryoav/besen](https://github
 
 ## [Unreleased]
 
+- Add a private UDP transport using the existing charger state and control methods, with a shared listener, serial routing, learned source ports, heartbeat expiry, and reconnect handling.
+- Add app-derived Wi-Fi provisioning formats with UTF-8 validation and fragmented Bluetooth writes. Require separate LAN verification before reporting provisioning success.
+- Correlate provisioning acknowledgements, preserve the wire serial, and use the negotiated MTU and acknowledged writes when the characteristic supports them. Discard echoed credentials.
+- Keep authenticated LAN sessions active when BS20 firmware broadcasts metadata after login. Verify the first heartbeat, expire silent registrations, and retry a missing temperature-unit reply on a later heartbeat.
+- Track passive LAN packet arrival times and require a fresh live status report after each login so consumers can verify transport handovers without accepting cached telemetry.
+
 ## [0.5.0] - 2026-10-17
 
 ### Breaking
