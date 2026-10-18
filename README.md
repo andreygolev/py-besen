@@ -5,7 +5,8 @@
 [![CI][ci-badge]][ci-url]
 [![License][license-badge]][license-url]
 
-`besen` is an async Python client for Besen EV chargers over Bluetooth Low Energy.
+`besen` is an async Python client for Besen EV chargers over Bluetooth Low Energy
+and local UDP.
 It provides connection management, PIN authentication, protocol parsing, typed
 state models, and charger commands.
 
@@ -115,10 +116,14 @@ connectable path is available.
 - `await client.async_start()` connects, subscribes to notifications, and completes
   the charger login flow.
 - `await client.async_stop()` cancels background tasks and disconnects.
+- `await client.async_wait_for_status(timeout=10.0)` requires a fresh live status
+  report from the current connection. It does not accept retained cached status.
 - `client.add_listener(callback)` registers a synchronous state callback and
   returns a function that removes it.
 - `client.state` returns the latest `BesenData` snapshot.
-- `client.is_connected` reports whether the underlying BLE connection is open.
+- `client.is_connected` reports whether the underlying BLE connection is open or
+  the UDP client owns a running listener. Use authenticated state and heartbeat
+  verification to establish that a UDP session is communicating with the charger.
 
 ### Charging status change in 0.5.0
 
@@ -126,10 +131,6 @@ connectable path is available.
 is pending. This replaces the incorrect `Cancel` label from 0.4.x. Applications
 that compare this field with `Cancel` must use `Scheduled` instead. The numeric
 protocol codes and start/stop commands are unchanged.
-
-The `0.5.0rc1` prerelease is for testing updated consumers. Install it explicitly
-with `pip install besen==0.5.0rc1`. Existing Home Assistant integrations need the
-matching status mapping before they can use this candidate.
 
 ### Control methods
 
@@ -145,6 +146,7 @@ manually with appropriate supervision before using them in an automation.
 - `await client.async_set_language(language)`
 - `await client.async_set_device_name(name)`
 - `await client.async_refresh_config()`
+- `await client.async_configure_wifi(ssid, password)` (Bluetooth provisioning)
 
 ### Scheduled and time-limited charging
 
@@ -199,6 +201,86 @@ when `BesenData.charge.current_state` is `Completed` or
 `Completed Full Charge`, and waits up to 5 seconds for the charger to leave that
 state. Scheduled starts are accepted in that state and send no stop.
 
+## LAN usage
+
+`BesenUdpClient` uses the same immutable state model and control methods as
+`BesenClient`. Use one `BesenUdpHub` for all chargers in the process. The hub
+listens on UDP port **28376**. Commands use port **7248** initially, then the
+source port learned from the charger. Broadcast discovery needs suitable LAN
+routing; supply `host` when the charger cannot be discovered by broadcast.
+
+This example reads live status from an already provisioned charger. Set
+`BESEN_HOST` and `BESEN_PIN` in the environment before running it.
+
+```python
+import asyncio
+import logging
+import os
+
+from besen import BesenUdpClient, BesenUdpHub
+
+
+async def main() -> None:
+    hub = BesenUdpHub()
+    client = BesenUdpClient(
+        address="garage",
+        pin=os.environ["BESEN_PIN"],
+        host=os.environ["BESEN_HOST"],
+        hub=hub,
+        logger=logging.getLogger("besen"),
+        sync_clock=False,
+    )
+    try:
+        await client.async_start()
+        await client.async_wait_for_status()
+        await client.async_wait_for_heartbeat()
+        print(client.state.charge.current_state)
+    finally:
+        await client.async_stop()
+        await hub.async_stop()
+
+
+asyncio.run(main())
+```
+
+`address` is a stable caller-selected identity, independent of the LAN host. It
+can retain an existing Bluetooth address when a consumer changes transports.
+The optional `serial` argument is the 16-character wire-order identifier reported
+by `client.state.info.serial`. A known serial routes later packets even when the
+charger's IP changes. `hub.discovered` records source addresses and ports;
+`hub.last_seen` records monotonic packet arrival times.
+
+`async_wait_for_heartbeat(timeout=20.0)` checks that LAN login registered a live
+push session. Expired heartbeats make the charger unavailable and trigger login
+retries. A rejected PIN raises `InvalidAuth` and stops retries.
+
+The protocol sends the charger PIN in clear text. Use a trusted local network
+and do not expose the UDP listener or charger port to the internet. Keep one
+active transport per charger. Automatic Bluetooth fallback and return to LAN
+are policies for the calling integration to implement.
+
+### Wi-Fi provisioning
+
+With an authenticated Bluetooth client whose `state.info.feature` is available:
+
+```python
+acknowledgement = await client.async_configure_wifi(
+    os.environ["BESEN_WIFI_SSID"],
+    os.environ["BESEN_WIFI_PASSWORD"],
+)
+```
+
+Use a 2.4 GHz network. The firmware feature word selects the appropriate layout:
+legacy firmware accepts up to 15 SSID and 16 password UTF-8 bytes; extended
+firmware accepts up to 32 SSID and 64 password bytes. Empty values, embedded NULs,
+oversized inputs and unknown capabilities raise `ValueError` before sending.
+
+The returned byte is an acknowledgement with undocumented result meanings. It
+does not prove that Wi-Fi joined or that LAN control works. Allow association to
+complete, release Bluetooth, then verify a UDP login, fresh live status and a
+heartbeat. Credentials and echoed Wi-Fi replies are not retained in client
+state; callers must also avoid persisting or logging the supplied values.
+
 ## State model
 
 State updates are immutable dataclasses. Every listener receives a full `BesenData`
@@ -206,10 +288,10 @@ snapshot.
 
 Important fields:
 
-- `BesenData.available`: whether the latest BLE state is usable.
+- `BesenData.available`: whether the latest charger state is usable.
 - `BesenData.authenticated`: whether the PIN login flow completed.
 - `BesenData.auth_failed`: whether the charger explicitly rejected the PIN. Automatic
-  reconnects stop until a new login is started; a Bluetooth outage or incomplete
+  reconnects stop until a new login is started; a network outage or incomplete
   login does not set it.
 - `BesenData.info`: charger metadata such as serial, model, phases, firmware, and
   board revision.

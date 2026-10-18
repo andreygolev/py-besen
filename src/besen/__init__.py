@@ -20,13 +20,16 @@ from .models import (
     ChargeStatus,
     CommandResult,
 )
+from .udp import BesenUdpClient, BesenUdpHub
 
-__version__ = "0.5.1.dev4"
+__version__ = "0.6.0"
 
 __all__ = [
     "BesenClient",
     "BesenData",
     "BesenError",
+    "BesenUdpClient",
+    "BesenUdpHub",
     "BoardRevision",
     "CannotConnect",
     "CharacteristicPair",
