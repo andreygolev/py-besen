@@ -281,6 +281,20 @@ async def test_fresh_status_is_required_after_every_login(
         await client.async_wait_for_status(0.01)
 
 
+async def test_wifi_credentials_are_never_sent_over_udp(
+    lan: tuple[BesenUdpHub, BesenUdpClient, Charger],
+) -> None:
+    hub, client, charger = lan
+    await client.async_start()
+    with patch.object(hub, "send", wraps=hub.send) as send:
+        with pytest.raises(CommandFailed, match="requires a Bluetooth connection"):
+            await client.async_configure_wifi("private-network", "private-password")
+        send.assert_not_called()
+    await asyncio.sleep(0)
+    assert client.wifi_acknowledgement is None
+    assert all(packet.command != 0x810A for packet in charger.requests)
+
+
 async def test_unknown_serial_host_login_and_socket_rebind(
     lan: tuple[BesenUdpHub, BesenUdpClient, Charger],
 ) -> None:

@@ -157,6 +157,10 @@ class BesenUdpClient(BesenClient):
         if not self._state.authenticated or not self._state.available:
             raise CannotConnect("LAN registration is no longer active")
 
+    async def async_configure_wifi(self, ssid: str, password: str) -> int:
+        """Keep network credential provisioning on the verified BLE transport."""
+        raise CommandFailed("Wi-Fi setup requires a Bluetooth connection")
+
     @property
     def is_connected(self) -> bool:
         """Return whether this session owns a running UDP listener."""

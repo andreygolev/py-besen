@@ -8,6 +8,12 @@ Up to version 0.4.8, the library was developed in [moryoav/besen](https://github
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-18
+
+### Fixed
+
+- Reject Wi-Fi provisioning through `BesenUdpClient` before sending anything, so network credentials are sent only through Bluetooth. Add a UDP regression test for this boundary.
+
 ## [0.6.0] - 2026-10-18
 
 ### Added
